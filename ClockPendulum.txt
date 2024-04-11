@@ -1,0 +1,234 @@
+//#include <GL/glew.h>
+#include <GL/freeglut.h>
+#include <iostream>
+#include <cmath>
+#include <SOIL.h>
+
+#define GLM_FORCE_RADIANS
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
+#define PI 3.14159265358979323846
+
+GLuint shaderProgram;
+GLuint VBO, VAO;
+GLuint clockTexture, pendulumTexture;
+float angle = 0.0f;
+float pendulumLength = 0.5f;
+float clockRadius = 0.4f;
+float pendulumWidth = 0.02f;
+float pendulumHeight = 0.4f;
+glm::mat4 projection;
+bool pendulumSwing = true;
+float pendulumAngle = 0.0f;
+
+const char* vertexShaderSource = R"glsl(
+    #version 330 core
+    layout (location = 0) in vec3 aPos;
+    layout (location = 1) in vec2 aTexCoord;
+    out vec2 TexCoord;
+    uniform mat4 model;
+    uniform mat4 view;
+    uniform mat4 projection;
+    void main()
+    {
+        gl_Position = projection * view * model * vec4(aPos, 1.0);
+        TexCoord = vec2(aTexCoord.x, 1.0 - aTexCoord.y);
+    }
+)glsl";
+
+const char* fragmentShaderSource = R"glsl(
+    #version 330 core
+    in vec2 TexCoord;
+    out vec4 FragColor;
+    uniform sampler2D clockTexture;
+    uniform sampler2D pendulumTexture;
+    void main()
+    {
+        vec4 clockColor = texture(clockTexture, TexCoord);
+        vec4 pendulumColor = texture(pendulumTexture, TexCoord);
+        FragColor = mix(clockColor, pendulumColor, pendulumColor.a);
+    }
+)glsl";
+
+void initShaderProgram() {
+   
+    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
+    glCompileShader(vertexShader);
+
+    
+    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
+    glCompileShader(fragmentShader);
+
+    
+    shaderProgram = glCreateProgram();
+    glAttachShader(shaderProgram, vertexShader);
+    glAttachShader(shaderProgram, fragmentShader);
+    glLinkProgram(shaderProgram);
+
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+}
+
+void initClock() {
+   
+    GLfloat clockVertices[360 * 5]; 
+    GLfloat pendulumVertices[] = {
+       
+        -pendulumWidth / 2, -clockRadius, 0.0f, 0.0f, 0.0f,
+        pendulumWidth / 2, -clockRadius, 0.0f, 1.0f, 0.0f,
+        pendulumWidth / 2, pendulumHeight - clockRadius, 0.0f, 1.0f, 1.0f,
+
+        pendulumWidth / 2, pendulumHeight - clockRadius, 0.0f, 1.0f, 1.0f,
+        -pendulumWidth / 2, pendulumHeight - clockRadius, 0.0f, 0.0f, 1.0f,
+        -pendulumWidth / 2, -clockRadius, 0.0f, 0.0f, 0.0f
+    };
+
+    
+    for (int i = 0; i < 360; ++i) {
+        float theta = i * PI / 180.0f;
+        clockVertices[i * 5] = clockRadius * cos(theta);
+        clockVertices[i * 5 + 1] = clockRadius * sin(theta);
+        clockVertices[i * 5 + 2] = 0.0f;
+        clockVertices[i * 5 + 3] = (cos(theta) + 1) / 2; // Normalize to [0,1] for texture mapping
+        clockVertices[i * 5 + 4] = (sin(theta) + 1) / 2;
+    }
+
+  
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+
+    glBindVertexArray(VAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(clockVertices) + sizeof(pendulumVertices), NULL, GL_STATIC_DRAW);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(clockVertices), clockVertices);
+    glBufferSubData(GL_ARRAY_BUFFER, sizeof(clockVertices), sizeof(pendulumVertices), pendulumVertices);
+
+    
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), (GLvoid*)0);
+    glEnableVertexAttribArray(0);
+    
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), (GLvoid*)(3 * sizeof(GLfloat)));
+    glEnableVertexAttribArray(1);
+
+    glBindVertexArray(0);
+}
+
+void loadTextures() {
+    
+    glGenTextures(1, &clockTexture);
+    glBindTexture(GL_TEXTURE_2D, clockTexture);
+    int width, height;
+    unsigned char* image = SOIL_load_image("clock_texture.jpg", &width, &height, 0, SOIL_LOAD_RGB);
+    if (image) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
+    SOIL_free_image_data(image);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+   
+    glGenTextures(1, &pendulumTexture);
+    glBindTexture(GL_TEXTURE_2D, pendulumTexture);
+    image = SOIL_load_image("pendulum_texture.jpg", &width, &height, 0, SOIL_LOAD_RGBA);
+    if (image) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image);
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
+    SOIL_free_image_data(image);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void display() {
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(shaderProgram);
+
+    // Set up view matrix
+    glm::mat4 view;
+    view = glm::translate(view, glm::vec3(0.0f, 0.0f, -2.0f));
+
+    // Clock
+    glBindVertexArray(VAO);
+    glm::mat4 model;
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, clockTexture);
+    glUniform1i(glGetUniformLocation(shaderProgram, "clockTexture"), 0);
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 360);
+
+    // Pendulum
+    glm::mat4 pendulumModel;
+    pendulumModel = glm::translate(pendulumModel, glm::vec3(0.0f, -clockRadius, 0.0f));
+    if (pendulumSwing) {
+        pendulumAngle = 20.0f * sin(glm::radians(angle));
+    }
+    pendulumModel = glm::rotate(pendulumModel, glm::radians(pendulumAngle), glm::vec3(1.0f, 0.0f, 0.0f));
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(pendulumModel));
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, pendulumTexture);
+    glUniform1i(glGetUniformLocation(shaderProgram, "pendulumTexture"), 0);
+    glDrawArrays(GL_TRIANGLES, 360, 6);
+
+    glBindVertexArray(0);
+    glUseProgram(0);
+
+    glutSwapBuffers();
+}
+
+void update(int value) {
+    angle += 1.0f;
+    if (angle > 360.0f)
+        angle -= 360.0f;
+
+    glutPostRedisplay();
+    glutTimerFunc(16, update, 0);
+}
+
+void reshape(int w, int h) {
+    glViewport(0, 0, w, h);
+    projection = glm::perspective(glm::radians(45.0f), (float)w / (float)h, 0.1f, 100.0f);
+}
+
+void mouse(int button, int state, int x, int y) {
+    if (button == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
+        pendulumSwing = !pendulumSwing;
+    }
+}
+
+void keyboard(unsigned char key, int x, int y) {
+    switch (key) {
+    case 'a':
+    case 'A':
+        angle -= 5.0f;
+        break;
+    case 'd':
+    case 'D':
+        angle += 5.0f;
+        break;
+    }
+}
+
+int main(int argc, char** argv) {
+    glutInit(&argc, argv);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
+    glutInitWindowSize(800, 600);
+    glutCreateWindow("3D Clock with Pendulum");
+    glewExperimental = GL_TRUE;
+    glewInit();
+    initShaderProgram();
+    initClock();
+    loadTextures();
+    glutDisplayFunc(display);
+    glutReshapeFunc(reshape);
+    glutTimerFunc(16, update, 0);
+    glutMouseFunc(mouse);
+    glutKeyboardFunc(keyboard);
+    glutMainLoop();
+    return 0;
+}
